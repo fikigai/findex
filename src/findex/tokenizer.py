@@ -4,20 +4,22 @@ from typing import Iterator
 
 
 def tokenize(text: str) -> Iterator[str]:
-    """Потоковий токенізатор: нормалізує Unicode, переводить у нижній регістр
+    """Потоковий токенізатор:
 
-    та виділяє терми за допомогою регулярного виразу.
+    - Нормалізація Unicode (форма NFC)
+    - Регістронезалежне зведення через casefold()
+    - Виділення термів з урахуванням дефісів, апострофів та цифр.
     """
-    # 1. Нормалізація Unicode (форма NFKC)
-    normalized_text = unicodedata.normalize("NFKC", text)
+    # 1. Нормалізація Unicode (форма NFC за вимогами курсу)
+    normalized_text = unicodedata.normalize("NFC", text)
 
-    # 2. Переводимо в нижній регістр
-    lower_text = normalized_text.lower()
+    # 2. Aggressive case-folding замість звичайного lower()
+    folded_text = normalized_text.casefold()
 
-    # 3. Виправляємо регулярний вираз: екрануємо дефіс (\-) та коректно вказуємо апострофи
+    # 3. Регулярний вираз для слів, цифр, дефісів та апострофів
     token_pattern = re.compile(
         r"\b[a-zа-яіїєґ0-9]+(?:['’\-][a-zа-яіїєґ0-9]+)*\b", re.UNICODE
     )
 
-    for match in token_pattern.finditer(lower_text):
+    for match in token_pattern.finditer(folded_text):
         yield match.group()

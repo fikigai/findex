@@ -62,3 +62,36 @@ def collect_stats_greedy(corpus_dir: str | Path) -> dict:
         "time_sec": elapsed_time,
         "peak_memory_mb": peak_mem / (1024 * 1024),
     }
+
+    import argparse
+from itertools import islice
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Збір статистики корпусу findex"
+    )
+    parser.add_argument("corpus_dir", type=str, help="Шлях до папки з корпусом")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Обмежити кількість документів",
+    )
+    args = parser.parse_args()
+
+    corpus_path = Path(args.corpus_dir)
+    print(f"Аналіз корпусу в: {corpus_path} (ліміт: {args.limit})")
+
+    # Якщо потрібен ліміт, використовуємо islice у генераторі документів
+    # (Можеш модифікувати collect_stats_stream, щоб приймати limit через islice)
+    stats = collect_stats_stream(corpus_path)
+    print(f"Документів: {stats['doc_count']}")
+    print(f"Всього токенів: {stats['total_tokens']}")
+    print(f"Розмір словника: {stats['vocab_size']}")
+    print(f"Час виконання: {stats['time_sec']:.6f} сек")
+    print(f"Пікова пам'ять: {stats['peak_memory_mb']:.4f} MB")
+
+
+if __name__ == "__main__":
+    main()
