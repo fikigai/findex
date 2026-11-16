@@ -1,4 +1,6 @@
 # Findex — Розподілена пошукова система
+ 
+![CI](https://github.com/fikigai/findex/actions/workflows/ci.yml/badge.svg) 
 
 ## Лабораторна робота №1: Ітератори, генератори та ліниві конвеєри обробки даних
 
@@ -78,6 +80,32 @@
 [Другий виклик — гарячий кеш / cache hit]:
 [TIMED] search_cached виконано за 0.000007 сек | Пікова пам'ять: 0.0001 MB
 
+## Лабораторна робота №4: Типи, тести, пакування і CLI
+
+### Реалізована функціональність
+- **Сувора типізація (`pyright --strict`):** 0 помилок, використані `typing.Protocol` (`Scorer`), `Iterator`/`Sequence`, `Literal["bm25", "tfidf"]` та `Literal["merge", "set"]`, маркер пакету `py.typed`.
+- **Повноцінний CLI (`typer` + `rich`):** точка входу `findex` у `[project.scripts]` з підкомандами `findex index` (прогрес-бар `rich`), `findex search` (таблиця `rich` або чистий JSON у `stdout` за прапорцем `--json`) та `findex stats`.
+- **Логування та обробка помилок:** усі діагностичні повідомлення переведені на стандартний `logging` у `stderr` з прапорцями `-v` (`INFO`) та `-vv` (`DEBUG`). Очікувані помилки (відсутній індекс, некоректний синтаксис запиту) повертають зрозумілий рядок у `stderr` і код виходу `1` без стек-трейсу.
+- **Тестування (`pytest` + `Hypothesis`):** 35+ тестів (параметризовані тести Unicode-токенізатора, AST-парсера, скорерів, `CliRunner` та 3 властивості `Hypothesis`: roundtrip `load(save(index))`, інваріант сортування постінгів і еквівалентність `merge == set`).
+
+### Покриття коду тестами (Coverage)
+- **Загальне покриття (`pytest --cov=findex`):** **92%**
+- **Що навмисно залишилось поза покриттям:** блоки `if __name__ == "__main__": app()` та захисні гілки читання пошкоджених бінарних файлів ОС (`OSError`).
+
+### Встановлення та використання CLI
+```bash
+# Встановлення глобально у PATH як інструмент uv
+uv tool install .
+
+# Побудова індексу з прогрес-баром
+findex index data/corpus --out index.bin
+
+# Пошук з таблицею Rich або виводом у JSON
+findex search index.bin "python" --scorer bm25
+findex search index.bin "python" --json > results.json
+
+# Статистика корпусу
+findex stats data/corpus
 
 ### Інструкція зі встановлення та запуску
 

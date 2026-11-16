@@ -1,21 +1,19 @@
+import logging
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Generator, Tuple
+
+logger = logging.getLogger("findex")
 
 
-def iter_documents(corpus_dir: str | Path) -> Generator[Tuple[str, str], None, None]:
-    """Генератор, який рекурсивно обходить корпус і повертає документи по одному.
+def iter_documents(corpus_dir: str | Path) -> Iterator[tuple[str, str]]:
+    """Лінивий генератор, що читає текстові документи з директорії по одному."""
+    path = Path(corpus_dir)
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError(f"Директорію корпусу не знайдено: {path}")
 
-    Повертає кортеж: (doc_id, text)
-    """
-    corpus_path = Path(corpus_dir)
-    if not corpus_path.exists():
-        return
-
-    # Шукаємо всі текстові файли в корпусі
-    for file_path in corpus_path.rglob("*.txt"):
-        try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
-            doc_id = str(file_path.relative_to(corpus_path))
-            yield doc_id, text
-        except Exception as e:
-            print(f"Помилка читання файлу {file_path}: {e}")
+    files = sorted(p for p in path.rglob("*.txt") if p.is_file())
+    for file_path in files:
+        doc_id = file_path.relative_to(path).as_posix()
+        logger.debug("Читання документа: %s", doc_id)
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        yield doc_id, text

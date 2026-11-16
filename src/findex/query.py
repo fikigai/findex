@@ -1,19 +1,24 @@
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import re
-from typing import List, Set
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from findex.index import Index
 from findex.tokenizer import tokenize
 
 
+class QuerySyntaxError(ValueError):
+    """Помилка синтаксису пошукового запиту."""
+
+
 class QueryNode(ABC):
     @abstractmethod
-    def evaluate(self, index: Index) -> Set[str]:
-        pass
+    def evaluate(self, index: Index) -> set[str]:
+        ...
 
     @abstractmethod
-    def extract_terms(self) -> List[str]:
-        pass
+    def extract_terms(self) -> list[str]:
+        ...
 
     def __and__(self, other: "QueryNode") -> "AndNode":
         return AndNode(self, other)
@@ -29,10 +34,10 @@ class QueryNode(ABC):
 class TermNode(QueryNode):
     term: str
 
-    def evaluate(self, index: Index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return {p.doc_id for p in index.index.get(self.term, [])}
 
-    def extract_terms(self) -> List[str]:
+    def extract_terms(self) -> list[str]:
         return [self.term]
 
 
@@ -40,10 +45,10 @@ class TermNode(QueryNode):
 class PhraseNode(QueryNode):
     terms: tuple[str, ...]
 
-    def __init__(self, terms: List[str] | tuple[str, ...]):
+    def __init__(self, terms: Sequence[str]) -> None:
         object.__setattr__(self, "terms", tuple(terms))
 
-    def evaluate(self, index: Index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         if not self.terms:
             return set()
         postings_lists = [index.index.get(t, []) for t in self.terms]
@@ -55,7 +60,7 @@ class PhraseNode(QueryNode):
         for dmap in doc_maps[1:]:
             common_docs.intersection_update(dmap.keys())
 
-        matching_docs = set()
+        matching_docs: set[str] = set()
         for doc_id in common_docs:
             positions_list = [dmap[doc_id] for dmap in doc_maps]
             for p0 in positions_list[0]:
@@ -64,7 +69,7 @@ class PhraseNode(QueryNode):
                     break
         return matching_docs
 
-    def extract_terms(self) -> List[str]:
+    def extract_terms(self) -> list[str]:
         return list(self.terms)
 
 
@@ -73,10 +78,10 @@ class AndNode(QueryNode):
     left: QueryNode
     right: QueryNode
 
-    def evaluate(self, index: Index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return self.left.evaluate(index) & self.right.evaluate(index)
 
-    def extract_terms(self) -> List[str]:
+    def extract_terms(self) -> list[str]:
         return self.left.extract_terms() + self.right.extract_terms()
 
 
@@ -85,10 +90,10 @@ class OrNode(QueryNode):
     left: QueryNode
     right: QueryNode
 
-    def evaluate(self, index: Index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         return self.left.evaluate(index) | self.right.evaluate(index)
 
-    def extract_terms(self) -> List[str]:
+    def extract_terms(self) -> list[str]:
         return self.left.extract_terms() + self.right.extract_terms()
 
 
@@ -96,20 +101,21 @@ class OrNode(QueryNode):
 class NotNode(QueryNode):
     node: QueryNode
 
-    def evaluate(self, index: Index) -> Set[str]:
+    def evaluate(self, index: Index) -> set[str]:
         all_docs = set(index.docs.keys())
         return all_docs - self.node.evaluate(index)
 
-    def extract_terms(self) -> List[str]:
+    def extract_terms(self) -> list[str]:
         return []
 
 
 _TOKEN_RE = re.compile(r'\(|\)|"[^"]+"|[^\s()"]+')
 
-class QueryParser:
-    """Парсер рекурсивного спуску: OR -> AND (явний і неявний) -> NOT -> Primary."""
 
-    def __init__(self, tokens: List[str]):
+class QueryParser:
+    """Парсер рекурсивного спуску для булевих та фразових запитів."""
+
+    def __init__(self, tokens: list[str]) -> None:
         self.tokens = tokens
         self.pos = 0
 
@@ -117,14 +123,19 @@ class QueryParser:
         return self.tokens[self.pos] if self.pos < len(self.tokens) else None
 
     def consume(self) -> str:
-        tok = self.tokens[self.pos]
+        tok = self.peek()
+        if tok is None:
+            raise QuerySyntaxError("Неочікуваний кінець запиту")
         self.pos += 1
         return tok
 
     def parse(self) -> QueryNode | None:
         if not self.tokens:
             return None
-        return self.parse_or()
+        node = self.parse_or()
+        if self.peek() is not None:
+            raise QuerySyntaxError(f"Неочікуваний токен у запиті: {self.peek()}")
+        return node
 
     def parse_or(self) -> QueryNode:
         node = self.parse_and()
@@ -151,22 +162,35 @@ class QueryParser:
 
     def parse_primary(self) -> QueryNode:
         tok = self.peek()
+        if tok is None:
+            raise QuerySyntaxError("Очікувався терм або вираз у запиті")
+        if tok in ("AND", "OR", ")"):
+            raise QuerySyntaxError(f"Некоректне розташування оператора: {tok}")
         if tok == "(":
             self.consume()
-            node = self.parse_or()
             if self.peek() == ")":
-                self.consume()
+                raise QuerySyntaxError("Порожні дужки у запиті")
+            node = self.parse_or()
+            if self.peek() != ")":
+                raise QuerySyntaxError("Незакрита дужка '(' у запиті")
+            self.consume()
             return node
-        if tok and tok.startswith('"') and tok.endswith('"'):
+        if tok.startswith('"'):
+            if not tok.endswith('"') or len(tok) < 2:
+                raise QuerySyntaxError("Незакриті лапки у фразовому запиті")
             self.consume()
             phrase_terms = list(tokenize(tok[1:-1]))
             return PhraseNode(phrase_terms)
 
         raw = self.consume()
+        if '"' in raw:
+            raise QuerySyntaxError("Незакриті лапки у запиті")
         terms = list(tokenize(raw))
         return TermNode(terms[0] if terms else raw.casefold())
 
 
 def parse_query(query_str: str) -> QueryNode | None:
+    if query_str.count('"') % 2 != 0:
+        raise QuerySyntaxError("Непарна кількість лапок у запиті")
     raw_tokens = _TOKEN_RE.findall(query_str)
     return QueryParser(raw_tokens).parse()

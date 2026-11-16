@@ -1,21 +1,27 @@
-import argparse
+import json
+import logging
+import pickle
 from collections import abc, defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from functools import cached_property
 from itertools import islice
 from pathlib import Path
-import pickle
-from typing import Dict, Iterator, List, Tuple
+from types import TracebackType
+from typing import Any
+
 from findex.corpus import iter_documents
 from findex.decorators import timed
 from findex.tokenizer import tokenize
+
+logger = logging.getLogger("findex")
 
 
 @dataclass(frozen=True, slots=True)
 class Posting:
     doc_id: str
     freq: int
-    positions: Tuple[int, ...] = ()
+    positions: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,18 +30,23 @@ class DocMeta:
     length: int
 
 
-class Index(abc.Mapping):
-    """Об'єкт індексу, що реалізує протокол Mapping (як dict у Python)."""
+@dataclass
+class _TermAccumulator:
+    freq: int = 0
+    positions: list[int] = field(default_factory=lambda: list[int]())
+
+class Index(abc.Mapping[str, list[Posting]]):
+    """Інвертований індекс, що реалізує протокол Mapping[str, list[Posting]]."""
 
     def __init__(
         self,
-        index_dict: Dict[str, List[Posting]] = None,
-        docs_dict: Dict[str, DocMeta] = None,
-    ):
-        self.index = index_dict or {}
-        self.docs = docs_dict or {}
+        index_dict: dict[str, list[Posting]] | None = None,
+        docs_dict: dict[str, DocMeta] | None = None,
+    ) -> None:
+        self.index: dict[str, list[Posting]] = index_dict if index_dict is not None else {}
+        self.docs: dict[str, DocMeta] = docs_dict if docs_dict is not None else {}
 
-    def __getitem__(self, term: str) -> List[Posting]:
+    def __getitem__(self, term: str) -> list[Posting]:
         return self.index[term]
 
     def __iter__(self) -> Iterator[str]:
@@ -46,6 +57,11 @@ class Index(abc.Mapping):
 
     def __repr__(self) -> str:
         return f"<Index terms={len(self.index)} docs={len(self.docs)}>"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Index):
+            return NotImplemented
+        return self.index == other.index and self.docs == other.docs
 
     @property
     def num_docs(self) -> int:
@@ -64,12 +80,16 @@ class Index(abc.Mapping):
     @classmethod
     @timed
     def build_from_corpus(
-        cls, corpus_dir: str | Path, limit: int | None = None
+        cls,
+        corpus_dir: str | Path,
+        limit: int | None = None,
+        keep_positions: bool = True,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> "Index":
-        raw_index = defaultdict(
-            lambda: defaultdict(lambda: {"freq": 0, "positions": []})
+        raw_index: dict[str, dict[str, _TermAccumulator]] = defaultdict(
+            lambda: defaultdict(_TermAccumulator)
         )
-        docs_dict = {}
+        docs_dict: dict[str, DocMeta] = {}
 
         doc_stream = iter_documents(corpus_dir)
         if limit is not None:
@@ -80,74 +100,108 @@ class Index(abc.Mapping):
             docs_dict[doc_id] = DocMeta(doc_id=doc_id, length=len(tokens))
 
             for pos, token in enumerate(tokens):
-                raw_index[token][doc_id]["freq"] += 1
-                raw_index[token][doc_id]["positions"].append(pos)
+                acc = raw_index[token][doc_id]
+                acc.freq += 1
+                if keep_positions:
+                    acc.positions.append(pos)
 
-        processed_index = {}
+            if progress_cb is not None:
+                progress_cb(doc_id)
+
+        processed_index: dict[str, list[Posting]] = {}
         for term, doc_data in raw_index.items():
             sorted_postings = [
                 Posting(
                     doc_id=d_id,
-                    freq=data["freq"],
-                    positions=tuple(data["positions"]),
+                    freq=acc.freq,
+                    positions=tuple(acc.positions) if keep_positions else (),
                 )
-                for d_id, data in sorted(doc_data.items())
+                for d_id, acc in sorted(doc_data.items())
             ]
             processed_index[term] = sorted_postings
 
+        logger.info(
+            "Побудовано індекс: %d документів, %d термів",
+            len(docs_dict),
+            len(processed_index),
+        )
         return cls(processed_index, docs_dict)
 
-    def save_pickle(self, path: str | Path):
+    @timed
+    def save_pickle(self, path: str | Path) -> None:
         with open(path, "wb") as f:
             pickle.dump(self, f)
 
     @staticmethod
     @timed
     def load_pickle(path: str | Path) -> "Index":
-        with open(path, "rb") as f:
-            return pickle.load(f)
+        """Завантажує індекс із pickle (небезпечно для чужих файлів через RCE)."""
+        file_path = Path(path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Файл індексу не знайдено: {file_path}")
+        with open(file_path, "rb") as f:
+            loaded: Any = pickle.load(f)
+            if not isinstance(loaded, Index):
+                raise TypeError("Пошкоджений формат файлу індексу")
+            return loaded
+
+    @timed
+    def save_json(self, path: str | Path) -> None:
+        data = {
+            "docs": {d_id: meta.length for d_id, meta in self.docs.items()},
+            "index": {
+                term: [[p.doc_id, p.freq, list(p.positions)] for p in postings]
+                for term, postings in self.index.items()
+            },
+        }
+        Path(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    @timed
+    def load_json(path: str | Path) -> "Index":
+        file_path = Path(path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Файл індексу не знайдено: {file_path}")
+        raw: dict[str, Any] = json.loads(file_path.read_text(encoding="utf-8"))
+        docs = {
+            str(d_id): DocMeta(doc_id=str(d_id), length=int(length))
+            for d_id, length in raw["docs"].items()
+        }
+        index_dict: dict[str, list[Posting]] = {}
+        for term, plist in raw["index"].items():
+            index_dict[str(term)] = [
+                Posting(
+                    doc_id=str(item[0]),
+                    freq=int(item[1]),
+                    positions=tuple(int(x) for x in item[2]),
+                )
+                for item in plist
+            ]
+        return Index(index_dict, docs)
 
 
 InvertedIndex = Index
 
 
 class open_index:
-    """Контекстний менеджер для безпечного відкриття та очищення ресурсів індексу."""
+    """Контекстний менеджер для відкриття та автоматичного очищення ресурсів індексу."""
 
-    def __init__(self, path: str | Path):
-        self.path = path
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
         self.index: Index | None = None
 
     def __enter__(self) -> Index:
-        self.index = Index.load_pickle(self.path)
+        if self.path.suffix == ".json":
+            self.index = Index.load_json(self.path)
+        else:
+            self.index = Index.load_pickle(self.path)
         return self.index
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
         self.index = None
         return False
-
-
-def main():
-    from findex.index import Index as PackageIndex
-
-    parser = argparse.ArgumentParser(
-        description="Побудова інвертованого індексу findex (Lab 3)"
-    )
-    parser.add_argument("corpus_dir", type=str, help="Шлях до корпусу")
-    parser.add_argument(
-        "--out", type=str, default="index.bin", help="Файл збереження індексу"
-    )
-    parser.add_argument(
-        "--limit", type=int, default=None, help="Ліміт документів"
-    )
-    args = parser.parse_args()
-
-    index = PackageIndex.build_from_corpus(args.corpus_dir, limit=args.limit)
-    index.save_pickle(args.out)
-
-    print(f"Індекс збережено у {args.out}: {repr(index)}")
-    print(f"Середня довжина документа: {index.avg_doc_length:.2f} токенів")
-
-
-if __name__ == "__main__":
-    main()

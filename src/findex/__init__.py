@@ -1,2 +1,3 @@
-def hello() -> str:
-    return "Hello from findex!"
+"""Findex search engine package."""
+
+__version__ = "0.4.0"

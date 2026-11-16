@@ -1,16 +1,22 @@
-from dataclasses import dataclass, field
 import math
 import re
-from typing import List, Protocol
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
+
 from findex.index import Index
+
+ScorerName = Literal["bm25", "tfidf"]
 
 
 class Scorer(Protocol):
-    def score(self, index: Index, terms: List[str], doc_id: str, doc_len: int) -> float:
+    """Структурний протокол для алгоритмів ранжування документів."""
+
+    def score(self, index: Index, terms: Sequence[str], doc_id: str, doc_len: int) -> float:
         ...
 
 
-@dataclass(order=True)
+@dataclass(order=True, frozen=True, slots=True)
 class SearchResult:
     score: float
     doc_id: str = field(compare=False)
@@ -18,12 +24,12 @@ class SearchResult:
 
 
 class TfIdfScorer:
-    def score(self, index: Index, terms: List[str], doc_id: str, doc_len: int) -> float:
+    def score(self, index: Index, terms: Sequence[str], doc_id: str, doc_len: int) -> float:
         score = 0.0
         for term in terms:
             postings = index.index.get(term, [])
             posting = next((p for p in postings if p.doc_id == doc_id), None)
-            if posting and doc_len > 0:
+            if posting is not None and doc_len > 0:
                 tf = 1.0 + math.log(posting.freq)
                 df = index.df(term)
                 idf = math.log(1.0 + index.num_docs / (df + 1.0))
@@ -32,20 +38,20 @@ class TfIdfScorer:
 
 
 class BM25Scorer:
-    def __init__(self, k1: float = 1.5, b: float = 0.75):
+    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
         self.k1 = k1
         self.b = b
 
-    def score(self, index: Index, terms: List[str], doc_id: str, doc_len: int) -> float:
+    def score(self, index: Index, terms: Sequence[str], doc_id: str, doc_len: int) -> float:
         score = 0.0
         avg_dl = index.avg_doc_length
-        if avg_dl == 0:
+        if avg_dl == 0.0:
             return 0.0
 
         for term in terms:
             postings = index.index.get(term, [])
             posting = next((p for p in postings if p.doc_id == doc_id), None)
-            if posting:
+            if posting is not None:
                 freq = posting.freq
                 df = index.df(term)
                 idf = math.log((index.num_docs - df + 0.5) / (df + 0.5) + 1.0)
@@ -55,8 +61,14 @@ class BM25Scorer:
         return score
 
 
-def generate_snippet(text: str, terms: List[str], window: int = 80) -> str:
-    """Генерує вікно ±80 символів навколо найкращого входження та підсвічує терми."""
+def make_scorer(name: ScorerName) -> Scorer:
+    if name == "bm25":
+        return BM25Scorer()
+    return TfIdfScorer()
+
+
+def generate_snippet(text: str, terms: Sequence[str], window: int = 80) -> str:
+    """Генерує сніпет вікном ±window символів навколо першого входження терма."""
     if not text:
         return ""
     lower_text = text.casefold()

@@ -1,76 +1,133 @@
-import argparse
-from functools import lru_cache
 import heapq
+import logging
+from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
-from typing import List, Tuple
+from typing import Literal
+
 from findex.decorators import timed
-from findex.index import Index, open_index
+from findex.index import Index, Posting
 from findex.query import parse_query
-from findex.ranking import BM25Scorer, Scorer, SearchResult, TfIdfScorer, generate_snippet
+from findex.ranking import BM25Scorer, Scorer, SearchResult, generate_snippet
+
+logger = logging.getLogger("findex")
+
+EngineName = Literal["merge", "set"]
 
 
 class SearchEngine:
-    def __init__(self, index: Index, scorer: Scorer | None = None):
+    def __init__(
+        self,
+        index: Index,
+        scorer: Scorer | None = None,
+        corpus_dir: str | Path = "data/corpus",
+    ) -> None:
         self.index = index
-        self.scorer = scorer or BM25Scorer()
+        self.scorer: Scorer = scorer if scorer is not None else BM25Scorer()
+        self.corpus_dir = Path(corpus_dir)
+        self._cached_lookup = lru_cache(maxsize=128)(self._execute_cached)
+
+    @staticmethod
+    def search_merge(index: Index, terms: Sequence[str]) -> list[str]:
+        """Двовказівниковий Boolean AND-перетин за відсортованими списками постінгів."""
+        if not terms:
+            return []
+        postings_lists = [index.index.get(term, []) for term in terms]
+        if any(not p_list for p_list in postings_lists):
+            return []
+
+        result_docs = [p.doc_id for p in postings_lists[0]]
+        for other_list in postings_lists[1:]:
+            result_docs = SearchEngine._intersect(result_docs, other_list)
+            if not result_docs:
+                break
+        return result_docs
+
+    @staticmethod
+    def _intersect(doc_ids: Sequence[str], postings: Sequence[Posting]) -> list[str]:
+        i, j = 0, 0
+        res: list[str] = []
+        p_len = len(postings)
+        while i < len(doc_ids) and j < p_len:
+            d_id = doc_ids[i]
+            p_id = postings[j].doc_id
+            if d_id == p_id:
+                res.append(d_id)
+                i += 1
+                j += 1
+            elif d_id < p_id:
+                i += 1
+            else:
+                j += 1
+        return res
+
+    @staticmethod
+    def search_set(index: Index, terms: Sequence[str]) -> list[str]:
+        """Boolean AND-перетин через операції над множинами set."""
+        if not terms:
+            return []
+        sets = [{p.doc_id for p in index.index.get(term, [])} for term in terms]
+        if any(not s for s in sets):
+            return []
+        return sorted(sets[0].intersection(*sets[1:]))
 
     @timed
-    @lru_cache(maxsize=128)
-    def search_cached(self, query_str: str, top_k: int = 5) -> Tuple[Tuple[str, float, str], ...]:
+    def search_cached(
+        self, query_str: str, top_k: int = 5
+    ) -> tuple[tuple[str, float, str], ...]:
+        """Кешований пошук через внутрішній lru_cache."""
+        return self._cached_lookup(query_str, top_k)
+
+    def _execute_cached(
+        self, query_str: str, top_k: int
+    ) -> tuple[tuple[str, float, str], ...]:
         results = self.search(query_str, top_k=top_k)
         return tuple((res.doc_id, res.score, res.snippet) for res in results)
 
-    def search(self, query_str: str, top_k: int = 5) -> List[SearchResult]:
+    def search(
+        self,
+        query_str: str,
+        top_k: int = 5,
+        engine: EngineName = "merge",
+    ) -> list[SearchResult]:
         ast = parse_query(query_str)
         if ast is None:
             return []
 
-        doc_candidates = ast.evaluate(self.index)
         terms = ast.extract_terms()
-        if not terms:
-            terms = [t.casefold() for t in query_str.split() if t.upper() not in ("AND", "OR", "NOT")]
+        is_simple_and = all(
+            tok not in ("OR", "NOT") and not tok.startswith('"')
+            for tok in query_str.split()
+        )
+        if is_simple_and and terms:
+            if engine == "merge":
+                doc_candidates = set(self.search_merge(self.index, terms))
+            else:
+                doc_candidates = set(self.search_set(self.index, terms))
+        else:
+            doc_candidates = ast.evaluate(self.index)
 
-        scored_results = []
+        if not terms:
+            terms = [
+                t.casefold()
+                for t in query_str.split()
+                if t.upper() not in ("AND", "OR", "NOT")
+            ]
+
+        scored_results: list[SearchResult] = []
         for doc_id in doc_candidates:
             doc_meta = self.index.docs.get(doc_id)
-            if not doc_meta:
+            if doc_meta is None:
                 continue
             score = self.scorer.score(self.index, terms, doc_id, doc_meta.length)
-            try:
-                text = Path("data/corpus", doc_id).read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                text = ""
+            doc_file = self.corpus_dir / doc_id
+            text = (
+                doc_file.read_text(encoding="utf-8", errors="ignore")
+                if doc_file.exists()
+                else ""
+            )
             snippet = generate_snippet(text, terms)
             scored_results.append(SearchResult(score=score, doc_id=doc_id, snippet=snippet))
 
+        logger.debug("Знайдено %d кандидатів для '%s'", len(scored_results), query_str)
         return heapq.nlargest(top_k, scored_results)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Ранжований пошук по індексу findex (Lab 3)")
-    parser.add_argument("index_file", type=str, help="Шлях до файлу індексу")
-    parser.add_argument("query", type=str, help="Пошуковий запит")
-    parser.add_argument("--scorer", choices=["bm25", "tfidf"], default="bm25", help="Модель ранжування")
-    parser.add_argument("--top", type=int, default=5, help="Кількість топ-результатів")
-    args = parser.parse_args()
-
-    scorer = BM25Scorer() if args.scorer == "bm25" else TfIdfScorer()
-
-    with open_index(args.index_file) as index:
-        engine = SearchEngine(index, scorer=scorer)
-        print(f"--- Запит: '{args.query}' (Рушій: {args.scorer.upper()}) ---")
-
-        print("\n[Перший виклик — холодний кеш]:")
-        results = engine.search_cached(args.query, top_k=args.top)
-
-        print("\n[Другий виклик — гарячий кеш / cache hit]:")
-        _ = engine.search_cached(args.query, top_k=args.top)
-
-        print(f"\nТоп-{args.top} результатів ранжування:")
-        for rank, (doc_id, score, snippet) in enumerate(results, 1):
-            print(f"{rank}. [Score: {score:.4f}] Doc: {doc_id}")
-            print(f"   Snippet: {snippet}\n")
-
-
-if __name__ == "__main__":
-    main()
