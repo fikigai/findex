@@ -1,83 +1,75 @@
 import argparse
-import time
-import tracemalloc
-from typing import List
-from findex.index import DocMeta, InvertedIndex, Posting  # <--- Додано DocMeta сюди
+from functools import lru_cache
+import heapq
+from pathlib import Path
+from typing import List, Tuple
+from findex.decorators import timed
+from findex.index import Index, open_index
+from findex.query import parse_query
+from findex.ranking import BM25Scorer, Scorer, SearchResult, TfIdfScorer, generate_snippet
 
 
 class SearchEngine:
+    def __init__(self, index: Index, scorer: Scorer | None = None):
+        self.index = index
+        self.scorer = scorer or BM25Scorer()
 
-    @staticmethod
-    def search_merge(index: InvertedIndex, terms: List[str]) -> List[str]:
+    @timed
+    @lru_cache(maxsize=128)
+    def search_cached(self, query_str: str, top_k: int = 5) -> Tuple[Tuple[str, float, str], ...]:
+        results = self.search(query_str, top_k=top_k)
+        return tuple((res.doc_id, res.score, res.snippet) for res in results)
+
+    def search(self, query_str: str, top_k: int = 5) -> List[SearchResult]:
+        ast = parse_query(query_str)
+        if ast is None:
+            return []
+
+        doc_candidates = ast.evaluate(self.index)
+        terms = ast.extract_terms()
         if not terms:
-            return []
-        postings_lists = [index.index.get(term, []) for term in terms]
-        if any(not p_list for p_list in postings_lists):
-            return []
+            terms = [t.casefold() for t in query_str.split() if t.upper() not in ("AND", "OR", "NOT")]
 
-        result_docs = [p.doc_id for p in postings_lists[0]]
-        for other_list in postings_lists[1:]:
-            result_docs = SearchEngine._intersect(result_docs, other_list)
-            if not result_docs:
-                break
-        return result_docs
+        scored_results = []
+        for doc_id in doc_candidates:
+            doc_meta = self.index.docs.get(doc_id)
+            if not doc_meta:
+                continue
+            score = self.scorer.score(self.index, terms, doc_id, doc_meta.length)
+            try:
+                text = Path("data/corpus", doc_id).read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                text = ""
+            snippet = generate_snippet(text, terms)
+            scored_results.append(SearchResult(score=score, doc_id=doc_id, snippet=snippet))
 
-    @staticmethod
-    def _intersect(doc_ids: List[str], postings: List[Posting]) -> List[str]:
-        i, j = 0, 0
-        res = []
-        p_len = len(postings)
-        while i < len(doc_ids) and j < p_len:
-            d_id = doc_ids[i]
-            p_id = postings[j].doc_id
-            if d_id == p_id:
-                res.append(d_id)
-                i += 1
-                j += 1
-            elif d_id < p_id:
-                i += 1
-            else:
-                j += 1
-        return res
-
-    @staticmethod
-    def search_set(index: InvertedIndex, terms: List[str]) -> List[str]:
-        if not terms:
-            return []
-        sets = [
-            set(p.doc_id for p in index.index.get(term, [])) for term in terms
-        ]
-        if any(not s for s in sets):
-            return []
-        return sorted(list(sets[0].intersection(*sets[1:])))
+        return heapq.nlargest(top_k, scored_results)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Пошук по індексу findex")
+    parser = argparse.ArgumentParser(description="Ранжований пошук по індексу findex (Lab 3)")
     parser.add_argument("index_file", type=str, help="Шлях до файлу індексу")
-    parser.add_argument("query", type=str, help="Пошуковий запит (терми через пробіл)")
-    parser.add_argument("--engine", choices=["merge", "set"], default="merge", help="Рушій пошуку")
+    parser.add_argument("query", type=str, help="Пошуковий запит")
+    parser.add_argument("--scorer", choices=["bm25", "tfidf"], default="bm25", help="Модель ранжування")
+    parser.add_argument("--top", type=int, default=5, help="Кількість топ-результатів")
     args = parser.parse_args()
 
-    tracemalloc.start()
-    start_time = time.time()
+    scorer = BM25Scorer() if args.scorer == "bm25" else TfIdfScorer()
 
-    index = InvertedIndex.load_pickle(args.index_file)
-    terms = args.query.lower().split()
+    with open_index(args.index_file) as index:
+        engine = SearchEngine(index, scorer=scorer)
+        print(f"--- Запит: '{args.query}' (Рушій: {args.scorer.upper()}) ---")
 
-    if args.engine == "merge":
-        results = SearchEngine.search_merge(index, terms)
-    else:
-        results = SearchEngine.search_set(index, terms)
+        print("\n[Перший виклик — холодний кеш]:")
+        results = engine.search_cached(args.query, top_k=args.top)
 
-    elapsed = time.time() - start_time
-    _, peak_mem = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+        print("\n[Другий виклик — гарячий кеш / cache hit]:")
+        _ = engine.search_cached(args.query, top_k=args.top)
 
-    print(f"Знайдено документів ({args.engine}): {results}")
-    print(f"Кількість результатів: {len(results)}")
-    print(f"Час пошуку: {elapsed:.6f} сек")
-    print(f"Пікова пам'ять: {peak_mem / (1024 * 1024):.4f} MB")
+        print(f"\nТоп-{args.top} результатів ранжування:")
+        for rank, (doc_id, score, snippet) in enumerate(results, 1):
+            print(f"{rank}. [Score: {score:.4f}] Doc: {doc_id}")
+            print(f"   Snippet: {snippet}\n")
 
 
 if __name__ == "__main__":

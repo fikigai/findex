@@ -1,13 +1,13 @@
 import argparse
-from collections import defaultdict
+from collections import abc, defaultdict
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import islice
 from pathlib import Path
 import pickle
-import time
-import tracemalloc
-from typing import Dict, List
+from typing import Dict, Iterator, List, Tuple
 from findex.corpus import iter_documents
+from findex.decorators import timed
 from findex.tokenizer import tokenize
 
 
@@ -15,6 +15,7 @@ from findex.tokenizer import tokenize
 class Posting:
     doc_id: str
     freq: int
+    positions: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,75 +24,129 @@ class DocMeta:
     length: int
 
 
-class InvertedIndex:
+class Index(abc.Mapping):
+    """Об'єкт індексу, що реалізує протокол Mapping (як dict у Python)."""
 
-    def __init__(self):
-        self.index: Dict[str, List[Posting]] = {}
-        self.docs: Dict[str, DocMeta] = {}
+    def __init__(
+        self,
+        index_dict: Dict[str, List[Posting]] = None,
+        docs_dict: Dict[str, DocMeta] = None,
+    ):
+        self.index = index_dict or {}
+        self.docs = docs_dict or {}
+
+    def __getitem__(self, term: str) -> List[Posting]:
+        return self.index[term]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.index)
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __repr__(self) -> str:
+        return f"<Index terms={len(self.index)} docs={len(self.docs)}>"
+
+    @property
+    def num_docs(self) -> int:
+        return len(self.docs)
+
+    @cached_property
+    def avg_doc_length(self) -> float:
+        if not self.docs:
+            return 0.0
+        total_len = sum(meta.length for meta in self.docs.values())
+        return total_len / len(self.docs)
+
+    def df(self, term: str) -> int:
+        return len(self.index.get(term, []))
 
     @classmethod
+    @timed
     def build_from_corpus(
         cls, corpus_dir: str | Path, limit: int | None = None
-    ) -> "InvertedIndex":
-        inv_index = cls()
-        raw_index = defaultdict(lambda: defaultdict(int))
+    ) -> "Index":
+        raw_index = defaultdict(
+            lambda: defaultdict(lambda: {"freq": 0, "positions": []})
+        )
+        docs_dict = {}
 
         doc_stream = iter_documents(corpus_dir)
         if limit is not None:
             doc_stream = islice(doc_stream, limit)
 
         for doc_id, text in doc_stream:
-            doc_tokens = list(tokenize(text))
-            inv_index.docs[doc_id] = DocMeta(doc_id=doc_id, length=len(doc_tokens))
+            tokens = list(tokenize(text))
+            docs_dict[doc_id] = DocMeta(doc_id=doc_id, length=len(tokens))
 
-            term_freqs = defaultdict(int)
-            for token in doc_tokens:
-                term_freqs[token] += 1
+            for pos, token in enumerate(tokens):
+                raw_index[token][doc_id]["freq"] += 1
+                raw_index[token][doc_id]["positions"].append(pos)
 
-            for term, freq in term_freqs.items():
-                raw_index[term][doc_id] = freq
-
-        for term, doc_freqs in raw_index.items():
+        processed_index = {}
+        for term, doc_data in raw_index.items():
             sorted_postings = [
-                Posting(doc_id=d_id, freq=f)
-                for d_id, f in sorted(doc_freqs.items())
+                Posting(
+                    doc_id=d_id,
+                    freq=data["freq"],
+                    positions=tuple(data["positions"]),
+                )
+                for d_id, data in sorted(doc_data.items())
             ]
-            inv_index.index[term] = sorted_postings
+            processed_index[term] = sorted_postings
 
-        return inv_index
+        return cls(processed_index, docs_dict)
 
     def save_pickle(self, path: str | Path):
         with open(path, "wb") as f:
             pickle.dump(self, f)
 
     @staticmethod
-    def load_pickle(path: str | Path) -> "InvertedIndex":
-        """УВАГА: pickle.load небезпечний для завантаження файлів з ненадійних джерел (RCE)."""
+    @timed
+    def load_pickle(path: str | Path) -> "Index":
         with open(path, "rb") as f:
             return pickle.load(f)
 
 
+InvertedIndex = Index
+
+
+class open_index:
+    """Контекстний менеджер для безпечного відкриття та очищення ресурсів індексу."""
+
+    def __init__(self, path: str | Path):
+        self.path = path
+        self.index: Index | None = None
+
+    def __enter__(self) -> Index:
+        self.index = Index.load_pickle(self.path)
+        return self.index
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.index = None
+        return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Побудова інвертованого індексу findex")
+    from findex.index import Index as PackageIndex
+
+    parser = argparse.ArgumentParser(
+        description="Побудова інвертованого індексу findex (Lab 3)"
+    )
     parser.add_argument("corpus_dir", type=str, help="Шлях до корпусу")
-    parser.add_argument("--out", type=str, default="index.bin", help="Файл збереження індексу")
-    parser.add_argument("--limit", type=int, default=None, help="Ліміт документів")
+    parser.add_argument(
+        "--out", type=str, default="index.bin", help="Файл збереження індексу"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Ліміт документів"
+    )
     args = parser.parse_args()
 
-    tracemalloc.start()
-    start_time = time.time()
-
-    index = InvertedIndex.build_from_corpus(args.corpus_dir, limit=args.limit)
+    index = PackageIndex.build_from_corpus(args.corpus_dir, limit=args.limit)
     index.save_pickle(args.out)
 
-    elapsed = time.time() - start_time
-    _, peak_mem = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    print(f"Індекс успішно збережено у {args.out}")
-    print(f"Документів: {len(index.docs)} | Унікальних термів: {len(index.index)}")
-    print(f"Час побудови: {elapsed:.4f} сек")
-    print(f"Пікова пам'ять: {peak_mem / (1024 * 1024):.4f} MB")
+    print(f"Індекс збережено у {args.out}: {repr(index)}")
+    print(f"Середня довжина документа: {index.avg_doc_length:.2f} токенів")
 
 
 if __name__ == "__main__":
