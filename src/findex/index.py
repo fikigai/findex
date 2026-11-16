@@ -163,7 +163,50 @@ class Index(abc.Mapping[str, list[Posting]]):
         workers: int = 1,
         executor: ExecutorType = "serial",
     ) -> "Index":
+        from itertools import islice
+
+        from findex.corpus import iter_documents
+
         root = Path(corpus_dir)
+        if not root.exists():
+            raise FileNotFoundError(f"Корпус не знайдено: {root}")
+
+        # Якщо передано JSONL-файл з findex crawl або директорію з JSONL — потокова індексація
+        if (root.is_file() and root.suffix == ".jsonl") or (
+            root.is_dir() and any(root.rglob("*.jsonl")) and not any(root.rglob("*.txt"))
+        ):
+            raw_index: dict[str, dict[str, _TermAccumulator]] = defaultdict(
+                lambda: defaultdict(_TermAccumulator)
+            )
+            docs_dict: dict[str, DocMeta] = {}
+            stream = iter_documents(root)
+            if limit is not None:
+                stream = islice(stream, limit)
+
+            for doc_id, text in stream:
+                tokens = list(tokenize(text))
+                docs_dict[doc_id] = DocMeta(doc_id=doc_id, length=len(tokens))
+                for pos, token in enumerate(tokens):
+                    acc = raw_index[token][doc_id]
+                    acc.freq += 1
+                    if keep_positions:
+                        acc.positions.append(pos)
+                if progress_cb is not None:
+                    progress_cb(doc_id)
+
+            processed: dict[str, list[Posting]] = {
+                term: [
+                    Posting(
+                        doc_id=d_id,
+                        freq=acc.freq,
+                        positions=tuple(acc.positions) if keep_positions else (),
+                    )
+                    for d_id, acc in sorted(doc_data.items())
+                ]
+                for term, doc_data in raw_index.items()
+            }
+            return cls(processed, docs_dict)
+
         files = list_corpus_files(root, limit=limit)
         tasks: list[tuple[str, Path]] = [
             (f.relative_to(root).as_posix(), f) for f in files

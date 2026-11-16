@@ -1,4 +1,5 @@
 import heapq
+import json
 import logging
 from collections.abc import Sequence
 from functools import lru_cache
@@ -26,6 +27,22 @@ class SearchEngine:
         self.scorer: Scorer = scorer if scorer is not None else BM25Scorer()
         self.corpus_dir = Path(corpus_dir)
         self._cached_lookup = lru_cache(maxsize=128)(self._execute_cached)
+
+    def _load_doc_text(self, doc_id: str) -> str:
+        if self.corpus_dir.is_file() and self.corpus_dir.suffix == ".jsonl":
+            with open(self.corpus_dir, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    if rec.get("url") == doc_id or rec.get("doc_id") == doc_id:
+                        return f"{rec.get('title', '')} {rec.get('text', '')}".strip()
+            return ""
+
+        doc_file = self.corpus_dir / doc_id
+        if doc_file.exists() and doc_file.is_file():
+            return doc_file.read_text(encoding="utf-8", errors="ignore")
+        return ""
 
     @staticmethod
     def search_merge(index: Index, terms: Sequence[str]) -> list[str]:
@@ -120,12 +137,7 @@ class SearchEngine:
             if doc_meta is None:
                 continue
             score = self.scorer.score(self.index, terms, doc_id, doc_meta.length)
-            doc_file = self.corpus_dir / doc_id
-            text = (
-                doc_file.read_text(encoding="utf-8", errors="ignore")
-                if doc_file.exists()
-                else ""
-            )
+            text = self._load_doc_text(doc_id)
             snippet = generate_snippet(text, terms)
             scored_results.append(SearchResult(score=score, doc_id=doc_id, snippet=snippet))
 

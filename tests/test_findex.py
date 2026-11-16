@@ -338,3 +338,173 @@ def test_cli_index_with_workers_and_executor(sample_corpus: Path, tmp_path: Path
     )
     assert res.exit_code == 0
     assert out_idx.exists()
+
+    # --- 8. Тести Лабораторної №6: Асинхронний краулер з httpx.MockTransport ---
+def test_canonicalize_url() -> None:
+    from findex.crawler import canonicalize_url
+
+    raw = "HTTPS://Example.COM:443/docs/page/?b=2&a=1#section-3"
+    assert canonicalize_url(raw) == "https://example.com/docs/page?a=1&b=2"
+
+
+def test_fetch_retries_429_and_503_with_retry_after() -> None:
+    import asyncio
+
+    import httpx
+
+    from findex.crawler import fetch
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(429, headers={"Retry-After": "0.01"}, text="Rate limited")
+        if call_count == 2:
+            return httpx.Response(503, text="Temporary overload")
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<h1>OK</h1>")
+
+    async def _run() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            res = await fetch(client, "http://test.local/item", base_backoff=0.01)
+            assert res.status == 200
+            assert res.attempts == 3
+
+    asyncio.run(_run())
+    assert call_count == 3
+
+
+def test_fetch_does_not_retry_404() -> None:
+    import asyncio
+
+    import httpx
+
+    from findex.crawler import fetch
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(404, text="Not Found")
+
+    async def _run() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            res = await fetch(client, "http://test.local/missing", base_backoff=0.01)
+            assert res.status == 404
+            assert res.attempts == 1
+
+    asyncio.run(_run())
+    assert call_count == 1
+
+
+def test_robots_cache_disallows_blocked_path() -> None:
+    import asyncio
+
+    import httpx
+
+    from findex.crawler import RobotsCache
+
+    robots_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal robots_calls
+        if request.url.path == "/robots.txt":
+            robots_calls += 1
+            return httpx.Response(200, text="User-agent: *\nDisallow: /private\n")
+        return httpx.Response(200, text="ok")
+
+    async def _run() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            rc = RobotsCache(client)
+            assert await rc.can_fetch("http://test.local/public/page") is True
+            assert await rc.can_fetch("http://test.local/private/secret") is False
+            # Повторний виклик береться з кешу без нового HTTP-запиту
+            assert await rc.can_fetch("http://test.local/public/other") is True
+
+    asyncio.run(_run())
+    assert robots_calls == 1
+
+
+def test_crawl_respects_max_pages_seen_and_robots() -> None:
+    import asyncio
+
+    import httpx
+
+    from findex.crawler import CrawledPage, crawl
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /blocked\n")
+        html = f"""
+        <html>
+          <head><title>Page {path}</title></head>
+          <body>
+            <p>Asyncio python crawler content on {path}</p>
+            <a href="/page1#frag">Page 1</a>
+            <a href="/page2?b=2&a=1">Page 2</a>
+            <a href="/page2?a=1&b=2">Page 2 duplicate</a>
+            <a href="/page3">Page 3</a>
+            <a href="/blocked">Blocked by robots</a>
+          </body>
+        </html>
+        """
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=html)
+
+    async def _run() -> list[CrawledPage]:
+        transport = httpx.MockTransport(handler)
+        pages: list[CrawledPage] = []
+        async for page in crawl(
+            "http://test.local/start",
+            max_pages=3,
+            concurrency=2,
+            min_host_interval=0.0,
+            transport=transport,
+        ):
+            pages.append(page)
+        return pages
+
+    collected = asyncio.run(_run())
+    assert len(collected) == 3
+    urls = {p.url for p in collected}
+    assert "http://test.local/blocked" not in urls
+
+
+def test_jsonl_corpus_indexing_and_search(tmp_path: Path) -> None:
+    jsonl_file = tmp_path / "crawled.jsonl"
+    records = [
+        {
+            "url": "http://docs.local/page1",
+            "status": 200,
+            "title": "Asyncio Event Loop",
+            "text": "Asyncio event loop runs coroutines and tasks concurrently.",
+        },
+        {
+            "url": "http://docs.local/page2",
+            "status": 200,
+            "title": "BM25 Ranking",
+            "text": "Inverted index with BM25 ranking scores documents.",
+        },
+    ]
+    jsonl_file.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+        encoding="utf-8",
+    )
+
+    idx_out = tmp_path / "crawled.bin"
+    res_idx = runner.invoke(app, ["index", str(jsonl_file), "--out", str(idx_out)])
+    assert res_idx.exit_code == 0
+
+    res_search = runner.invoke(
+        app,
+        ["search", str(idx_out), "asyncio", "--corpus", str(jsonl_file), "--json"],
+    )
+    assert res_search.exit_code == 0
+    results: list[dict[str, object]] = json.loads(res_search.stdout)
+    assert len(results) == 1
+    assert results[0]["doc_id"] == "http://docs.local/page1"

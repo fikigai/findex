@@ -219,3 +219,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 data/bench_corpus/
+crawl.log
+crawled_pages.jsonl
