@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "findex"
-version = "0.4.0"
+version = "0.5.0"
 description = "Fast inverted index and BM25/TF-IDF search engine"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,8 @@ dev = [
     "hypothesis>=6.100.0",
     "pyright>=1.1.380",
     "ruff>=0.6.0",
+    "psutil>=6.0.0",
+    "matplotlib>=3.9.0",
 ]
 
 [tool.hatch.build.targets.wheel]

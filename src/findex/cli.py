@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -9,7 +10,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from findex.index import Index, open_index
+from findex.index import ExecutorType, Index, open_index
 from findex.query import QuerySyntaxError
 from findex.ranking import ScorerName, SearchResult, make_scorer
 from findex.search import EngineName, SearchEngine
@@ -58,6 +59,13 @@ def index_cmd(
         "index.bin"
     ),
     limit: Annotated[int | None, typer.Option("--limit", help="Обмеження документів")] = None,
+    workers: Annotated[
+        int, typer.Option("--workers", "-w", help="Кількість воркерів")
+    ] = os.cpu_count() or 1,
+    executor: Annotated[
+        ExecutorType,
+        typer.Option("--executor", "-e", help="Режим виконання: serial, threads, processes"),
+    ] = "processes",
 ) -> None:
     """Побудувати інвертований індекс із корпусу та зберегти на диск."""
     try:
@@ -72,7 +80,13 @@ def index_cmd(
             def on_doc(doc_id: str) -> None:
                 progress.update(task, description=f"Індексація: {doc_id}")
 
-            idx = Index.build_from_corpus(corpus_dir, limit=limit, progress_cb=on_doc)
+            idx = Index.build_from_corpus(
+                corpus_dir,
+                limit=limit,
+                progress_cb=on_doc,
+                workers=workers,
+                executor=executor,
+            )
             if out.suffix == ".json":
                 idx.save_json(out)
             else:
@@ -80,7 +94,8 @@ def index_cmd(
 
         stdout_console.print(
             f"[green]Індекс збережено у {out}[/green] "
-            f"(документів: {idx.num_docs}, термів: {len(idx)})"
+            f"(документів: {idx.num_docs}, термів: {len(idx)}, "
+            f"executor: {executor}, workers: {workers})"
         )
     except (FileNotFoundError, ValueError, OSError) as exc:
         stderr_console.print(f"[red]Помилка:[/red] {exc}", highlight=False)

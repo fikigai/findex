@@ -287,3 +287,54 @@ def test_cli_broken_query_error(sample_corpus: Path, tmp_path: Path) -> None:
     res = runner.invoke(app, ["search", str(out_idx), 'python "unclosed'])
     assert res.exit_code != 0
     assert "Traceback" not in res.stdout
+
+
+    # --- 7. Тести Лабораторної №5: build_partial, merge та паралельні пули ---
+def test_merge_single_partial_equals_full_build(sample_corpus: Path) -> None:
+    from findex.corpus import list_corpus_files
+    from findex.index import build_partial, merge_indices
+
+    files = list_corpus_files(sample_corpus)
+    tasks = [(f.relative_to(sample_corpus).as_posix(), f) for f in files]
+
+    expected = Index.build_from_corpus(sample_corpus, executor="serial", workers=1)
+    actual = merge_indices([build_partial(tasks)])
+    assert actual == expected
+
+
+@pytest.mark.parametrize("executor", ["serial", "threads", "processes"])
+def test_parallel_executors_match_serial(sample_corpus: Path, executor: str) -> None:
+    serial_idx = Index.build_from_corpus(sample_corpus, executor="serial", workers=1)
+    parallel_idx = Index.build_from_corpus(
+        sample_corpus,
+        executor=executor,  # type: ignore[arg-type] # тестування параметризованих режимів
+        workers=2,
+    )
+    assert parallel_idx == serial_idx
+
+
+def test_worker_crash_propagates_exception(tmp_path: Path) -> None:
+    from findex.index import build_partial
+
+    missing_file = tmp_path / "does_not_exist.txt"
+    with pytest.raises(FileNotFoundError):
+        build_partial([("missing.txt", missing_file)])
+
+
+def test_cli_index_with_workers_and_executor(sample_corpus: Path, tmp_path: Path) -> None:
+    out_idx = tmp_path / "parallel.bin"
+    res = runner.invoke(
+        app,
+        [
+            "index",
+            str(sample_corpus),
+            "--out",
+            str(out_idx),
+            "--workers",
+            "2",
+            "--executor",
+            "threads",
+        ],
+    )
+    assert res.exit_code == 0
+    assert out_idx.exists()
