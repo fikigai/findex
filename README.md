@@ -1,3 +1,6 @@
+**Публічний вебпошук (Live Demo):** https://findex-6x7w.onrender.com  
+*(Swagger API: `https://findex-6x7w.onrender.com/docs` · Health check: `https://findex-6x7w.onrender.com/health`)*
+
 # Findex — Розподілена пошукова система
 
 ![CI](https://github.com/fikigai/findex/actions/workflows/ci.yml/badge.svg)
