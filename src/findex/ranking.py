@@ -98,3 +98,5 @@ def generate_snippet(text: str, terms: Sequence[str], window: int = 80) -> str:
     if end < len(text):
         snippet = snippet + "..."
     return snippet
+
+TFIDFScorer = TfIdfScorer

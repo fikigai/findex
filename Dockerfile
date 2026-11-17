@@ -31,14 +31,15 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     INDEX_PATH="/app/data/index.bin" \
     CORPUS_DIR="/app/data/corpus" \
+    EMBEDDINGS_PATH="/app/data/embeddings.npy" \
     PORT="8000"
 
 RUN mkdir -p /app/data && chown -R findex:findex /app/data
 
 USER findex
 
-# Попередньо збираємо стандартний індекс у образ, щоб контейнер був готовий до роботи одразу
-RUN findex index /app/data/corpus --out /app/data/index.bin --executor serial --workers 1
+RUN findex index /app/data/corpus --out /app/data/index.bin --executor serial --workers 1 \
+    && findex embed /app/data/corpus --out /app/data/embeddings.npy
 
 EXPOSE 8000
 

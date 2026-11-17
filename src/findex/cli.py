@@ -18,6 +18,7 @@ from findex.query import QuerySyntaxError
 from findex.ranking import ScorerName, SearchResult, make_scorer
 from findex.search import EngineName, SearchEngine
 from findex.stats import compute_stats
+from findex.vector import SearchMode, SemanticIndex, reciprocal_rank_fusion
 
 app = typer.Typer(
     name="findex",
@@ -71,6 +72,7 @@ def _render_crawl_dashboard(metrics: CrawlMetrics, max_pages: int) -> Table:
         str(metrics.queue_depth),
     )
     return table
+
 
 @app.command("crawl")
 def crawl_cmd(
@@ -157,6 +159,7 @@ def crawl_cmd(
         crawler_logger.removeHandler(file_handler)
         file_handler.close()
 
+
 @app.command("index")
 def index_cmd(
     corpus_dir: Annotated[Path, typer.Argument(help="Шлях до директорії корпусу або JSONL-файлу")],
@@ -207,12 +210,39 @@ def index_cmd(
         raise typer.Exit(code=1) from None
 
 
+@app.command("embed")
+def embed_cmd(
+    corpus_dir: Annotated[Path, typer.Argument(help="Шлях до директорії корпусу або JSONL")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Вихідний .npy файл")] = Path(
+        "embeddings.npy"
+    ),
+    chunk_words: Annotated[int, typer.Option("--chunk-words", help="Розмір фрагмента у словах")] = 80,
+) -> None:
+    """Побудувати матрицю L2-нормалізованих ембедингів фрагментів документів (.npy)."""
+    try:
+        sem_idx = SemanticIndex.build_from_corpus(corpus_dir, chunk_words=chunk_words)
+        sem_idx.save(out)
+        stdout_console.print(
+            f"[green]Ембединги збережено у {out}[/green] "
+            f"(фрагментів: {len(sem_idx.chunk_doc_ids)}, розмірність: {sem_idx.embeddings.shape[1]})"
+        )
+    except FileNotFoundError as exc:
+        stderr_console.print(f"[red]Помилка:[/red] {exc}", highlight=False)
+        raise typer.Exit(code=1) from None
+
+
 @app.command("search")
 def search_cmd(
     index_file: Annotated[Path, typer.Argument(help="Шлях до файлу індексу")],
     query: Annotated[str, typer.Argument(help="Пошуковий запит")],
     scorer: Annotated[ScorerName, typer.Option("--scorer", help="Модель ранжування")] = "bm25",
-    engine: Annotated[EngineName, typer.Option("--engine", help="Рушій перетину")] = "merge",
+    engine: Annotated[EngineName, typer.Option("--engine", help="Рушій перетину")] = "numpy",
+    mode: Annotated[
+        SearchMode, typer.Option("--mode", help="Режим пошуку: lexical, semantic, hybrid")
+    ] = "lexical",
+    embeddings_file: Annotated[
+        Path, typer.Option("--embeddings", help="Шлях до .npy ембедингів")
+    ] = Path("embeddings.npy"),
     top: Annotated[int, typer.Option("--top", "-k", help="Кількість результатів")] = 5,
     corpus_dir: Annotated[
         Path, typer.Option("--corpus", help="Директорія корпусу або JSONL-файл для сніпетів")
@@ -221,14 +251,28 @@ def search_cmd(
         bool, typer.Option("--json", help="Вивести результати у форматі JSON в stdout")
     ] = False,
 ) -> None:
-    """Виконати ранжований пошук по збереженому індексу."""
+    """Виконати ранжований пошук (lexical, semantic або hybrid RRF)."""
     results: list[SearchResult] = []
+    lex_res: list[SearchResult] = []
     try:
-        with open_index(index_file) as idx:
-            search_engine = SearchEngine(
-                idx, scorer=make_scorer(scorer), corpus_dir=corpus_dir
-            )
-            results = search_engine.search(query, top_k=top, engine=engine)
+        if mode == "semantic":
+            sem_idx = SemanticIndex.load(embeddings_file)
+            results = sem_idx.search(query, top_k=top)
+        elif mode == "hybrid":
+            with open_index(index_file) as idx:
+                search_engine = SearchEngine(
+                    idx, scorer=make_scorer(scorer), corpus_dir=corpus_dir
+                )
+                lex_res = search_engine.search(query, top_k=max(20, top * 3), engine=engine)
+            sem_idx = SemanticIndex.load(embeddings_file)
+            sem_res = sem_idx.search(query, top_k=max(20, top * 3))
+            results = reciprocal_rank_fusion(lex_res, sem_res, top_k=top)
+        else:
+            with open_index(index_file) as idx:
+                search_engine = SearchEngine(
+                    idx, scorer=make_scorer(scorer), corpus_dir=corpus_dir
+                )
+                results = search_engine.search(query, top_k=top, engine=engine)
     except (FileNotFoundError, QuerySyntaxError, ValueError, TypeError) as exc:
         stderr_console.print(f"[red]Помилка:[/red] {exc}", highlight=False)
         raise typer.Exit(code=1) from None
@@ -241,7 +285,7 @@ def search_cmd(
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         return
 
-    table = Table(title=f"Результати пошуку: '{query}' ({scorer.upper()})")
+    table = Table(title=f"Результати пошуку: '{query}' ({mode.upper()} / {scorer.upper()})")
     table.add_column("#", justify="right", style="cyan", no_wrap=True)
     table.add_column("Doc ID", style="magenta")
     table.add_column("Score", justify="right", style="green")
@@ -274,6 +318,7 @@ def stats_cmd(
     table.add_row("Розмір словника", str(stats.vocab_size))
     stdout_console.print(table)
 
+
 @app.command("serve")
 def serve_cmd(
     host: Annotated[str, typer.Option("--host", help="Адреса прослуховування")] = "0.0.0.0",
@@ -298,6 +343,7 @@ def serve_cmd(
         f"[green]Запуск Findex Web на http://{host}:{port}[/green] (workers={workers})"
     )
     uvicorn.run("findex.web.app:app", host=host, port=port, workers=workers)
+
 
 if __name__ == "__main__":
     app()

@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Literal
 
 from findex.decorators import timed
-from findex.index import Index, Posting
+from findex.index import Index, NumpyIndexView, Posting
 from findex.query import parse_query
-from findex.ranking import BM25Scorer, Scorer, SearchResult, generate_snippet
+from findex.ranking import BM25Scorer, Scorer, SearchResult, TFIDFScorer, generate_snippet
+from findex.vector import vector_search
 
 logger = logging.getLogger("findex")
 
-EngineName = Literal["merge", "set"]
+EngineName = Literal["merge", "set", "numpy"]
 
 
 class SearchEngine:
@@ -26,7 +27,14 @@ class SearchEngine:
         self.index = index
         self.scorer: Scorer = scorer if scorer is not None else BM25Scorer()
         self.corpus_dir = Path(corpus_dir)
+        self._numpy_view: NumpyIndexView | None = None
         self._cached_lookup = lru_cache(maxsize=128)(self._execute_cached)
+
+    @property
+    def numpy_view(self) -> NumpyIndexView:
+        if self._numpy_view is None:
+            self._numpy_view = NumpyIndexView.from_index(self.index)
+        return self._numpy_view
 
     def load_doc_text(self, doc_id: str) -> str:
         if self.corpus_dir.is_file() and self.corpus_dir.suffix == ".jsonl":
@@ -105,7 +113,7 @@ class SearchEngine:
         self,
         query_str: str,
         top_k: int = 5,
-        engine: EngineName = "merge",
+        engine: EngineName = "numpy",
     ) -> list[SearchResult]:
         ast = parse_query(query_str)
         if ast is None:
@@ -116,6 +124,19 @@ class SearchEngine:
             tok not in ("OR", "NOT") and not tok.startswith('"')
             for tok in query_str.split()
         )
+        if is_simple_and and terms and engine == "numpy" and self.corpus_dir.is_dir():
+            scorer_name: Literal["bm25", "tfidf"] = (
+                "tfidf" if isinstance(self.scorer, TFIDFScorer) else "bm25"
+            )
+            return vector_search(
+                self.index,
+                self.numpy_view,
+                terms,
+                self.corpus_dir,
+                scorer_name=scorer_name,
+                top_k=top_k,
+            )
+
         if is_simple_and and terms:
             if engine == "merge":
                 doc_candidates = set(self.search_merge(self.index, terms))

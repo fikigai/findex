@@ -335,3 +335,42 @@ class open_index:
     ) -> bool:
         self.index = None
         return False
+
+import numpy as np
+from numpy.typing import NDArray
+
+
+@dataclass(slots=True)
+class NumpyIndexView:
+    """Компактне векторне представлення індексу на масивах NumPy int32."""
+
+    idx_to_doc_id: tuple[str, ...]
+    doc_id_to_idx: dict[str, int]
+    doc_lengths: NDArray[np.int32]
+    avg_doc_length: float
+    term_doc_ids: dict[str, NDArray[np.int32]]
+    term_freqs: dict[str, NDArray[np.int32]]
+
+    @classmethod
+    def from_index(cls, index: Index) -> "NumpyIndexView":
+        sorted_doc_ids = tuple(sorted(index.docs.keys()))
+        doc_id_to_idx = {doc_id: i for i, doc_id in enumerate(sorted_doc_ids)}
+        doc_lengths = np.array(
+            [index.docs[d].length for d in sorted_doc_ids],
+            dtype=np.int32,
+        )
+        term_doc_ids: dict[str, NDArray[np.int32]] = {}
+        term_freqs: dict[str, NDArray[np.int32]] = {}
+        for term, postings in index.index.items():
+            pairs = sorted((doc_id_to_idx[p.doc_id], p.freq) for p in postings)
+            term_doc_ids[term] = np.array([p[0] for p in pairs], dtype=np.int32)
+            term_freqs[term] = np.array([p[1] for p in pairs], dtype=np.int32)
+
+        return cls(
+            idx_to_doc_id=sorted_doc_ids,
+            doc_id_to_idx=doc_id_to_idx,
+            doc_lengths=doc_lengths,
+            avg_doc_length=index.avg_doc_length,
+            term_doc_ids=term_doc_ids,
+            term_freqs=term_freqs,
+        )

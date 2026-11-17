@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="646" viewBox="0 0 960 646">
+<rect width="100%" height="100%" fill="#0f172a"/>
+<text x="20" y="34" fill="#f8fafc" font-family="monospace" font-size="18" font-weight="bold">Findex Search Flame Graph (cProfile cumtime top functions)</text>
+<rect x="20" y="55" width="920" height="26" rx="4" fill="#ef4444" opacity="0.88"/>
+<text x="28" y="72" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">search.py:112 search() — calls=30, cum=6072.25ms, self=83.76ms</text>
+<rect x="20" y="87" width="719" height="26" rx="4" fill="#f97316" opacity="0.88"/>
+<text x="28" y="104" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">search.py:39 load_doc_text() — calls=9600, cum=4750.21ms, self=77.03ms</text>
+<rect x="20" y="119" width="352" height="26" rx="4" fill="#f59e0b" opacity="0.88"/>
+<text x="28" y="136" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:835 stat() — calls=28800, cum=2325.60ms, self=19.82ms</text>
+<rect x="20" y="151" width="349" height="26" rx="4" fill="#eab308" opacity="0.88"/>
+<text x="28" y="168" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">~:0 <built-in method nt.stat>() — calls=28800, cum=2305.78ms, self=1872.58ms</text>
+<rect x="20" y="183" width="324" height="26" rx="4" fill="#84cc16" opacity="0.88"/>
+<text x="28" y="200" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:1022 read_text() — calls=9600, cum=2143.85ms, self=39.91ms</text>
+<rect x="20" y="215" width="200" height="26" rx="4" fill="#22c55e" opacity="0.88"/>
+<text x="28" y="232" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:886 is_file() — calls=19200, cum=1321.60ms, self=39.37ms</text>
+<rect x="20" y="247" width="161" height="26" rx="4" fill="#06b6d4" opacity="0.88"/>
+<text x="28" y="264" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:852 exists() — calls=9600, cum=1064.07ms, self=12.02ms</text>
+<rect x="20" y="279" width="143" height="26" rx="4" fill="#3b82f6" opacity="0.88"/>
+<text x="28" y="296" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">~:0 <method 'read' of '_io.TextIOWrapper' objects>() — calls=9600, cum=949.34ms, self=879.60ms</text>
+<rect x="20" y="311" width="135" height="26" rx="4" fill="#ef4444" opacity="0.88"/>
+<text x="28" y="328" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:1005 open() — calls=9600, cum=896.19ms, self=11.43ms</text>
+<rect x="20" y="343" width="133" height="26" rx="4" fill="#f97316" opacity="0.88"/>
+<text x="28" y="360" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">~:0 <built-in method _io.open>() — calls=9600, cum=883.21ms, self=856.54ms</text>
+<rect x="20" y="375" width="120" height="26" rx="4" fill="#f59e0b" opacity="0.88"/>
+<text x="28" y="392" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">ranking.py:70 generate_snippet() — calls=9600, cum=701.18ms, self=134.81ms</text>
+<rect x="20" y="407" width="120" height="26" rx="4" fill="#eab308" opacity="0.88"/>
+<text x="28" y="424" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">ranking.py:45 score() — calls=9600, cum=478.94ms, self=144.53ms</text>
+<rect x="20" y="439" width="120" height="26" rx="4" fill="#84cc16" opacity="0.88"/>
+<text x="28" y="456" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:447 __fspath__() — calls=38400, cum=442.77ms, self=38.21ms</text>
+<rect x="20" y="471" width="120" height="26" rx="4" fill="#22c55e" opacity="0.88"/>
+<text x="28" y="488" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:437 __str__() — calls=38400, cum=404.56ms, self=54.04ms</text>
+<rect x="20" y="503" width="120" height="26" rx="4" fill="#06b6d4" opacity="0.88"/>
+<text x="28" y="520" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:551 drive() — calls=9601, cum=298.97ms, self=23.68ms</text>
+<rect x="20" y="535" width="120" height="26" rx="4" fill="#3b82f6" opacity="0.88"/>
+<text x="28" y="552" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">pathlib.py:407 _load_parts() — calls=9601, cum=275.29ms, self=31.17ms</text>
+<rect x="20" y="567" width="120" height="26" rx="4" fill="#ef4444" opacity="0.88"/>
+<text x="28" y="584" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">~:0 <method '__exit__' of '_io._IOBase' objects>() — calls=9600, cum=255.27ms, self=255.27ms</text>
+<rect x="20" y="599" width="120" height="26" rx="4" fill="#f97316" opacity="0.88"/>
+<text x="28" y="616" fill="#0f172a" font-family="monospace" font-size="12" font-weight="bold">~:0 <built-in method builtins.next>() — calls=28800, cum=236.93ms, self=26.18ms</text>
+</svg>

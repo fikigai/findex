@@ -12,6 +12,7 @@ class SearchHitOut(BaseModel):
 
 class SearchResponseOut(BaseModel):
     query: str
+    mode: Literal["lexical", "semantic", "hybrid"] = "lexical"
     scorer: Literal["bm25", "tfidf"]
     page: int
     page_size: int

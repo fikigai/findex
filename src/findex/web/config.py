@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     index_path: Path = Path("index.bin")
     corpus_dir: Path = Path("data/corpus")
+    embeddings_path: Path = Path("embeddings.npy")
     app_title: str = "Findex Web Search"
 
     model_config = SettingsConfigDict(

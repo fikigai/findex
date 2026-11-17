@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import given, settings
@@ -610,3 +611,63 @@ def test_web_html_ui_renders(sample_index: Index, sample_corpus: Path) -> None:
     assert html_resp.status_code == 200
     assert "<mark>" in html_resp.text
     assert "doc1.txt" in html_resp.text
+
+    # --- 10. Тести Лабораторної №8: Векторизований NumPy BM25/TF-IDF, Semantic, RRF і Benchmarks ---
+def test_numpy_bm25_and_tfidf_match_lab3_order(sample_index: Index, sample_corpus: Path) -> None:
+    from findex.index import NumpyIndexView
+    from findex.ranking import BM25Scorer, TFIDFScorer
+    from findex.search import SearchEngine
+    from findex.vector import vector_search
+
+    view = NumpyIndexView.from_index(sample_index)
+
+    for scorer_name, scorer_obj in (("bm25", BM25Scorer()), ("tfidf", TFIDFScorer())):
+        eng = SearchEngine(sample_index, scorer=scorer_obj, corpus_dir=sample_corpus)
+        lab3_res = eng.search("python", top_k=5, engine="merge")
+        np_res = vector_search(
+            sample_index,
+            view,
+            ["python"],
+            sample_corpus,
+            scorer_name=scorer_name,  # type: ignore[arg-type]
+            top_k=5,
+        )
+        assert [r.doc_id for r in np_res] == [r.doc_id for r in lab3_res]
+        if scorer_name == "bm25":
+            for r_np, r_py in zip(np_res, lab3_res, strict=True):
+                assert abs(r_np.score - r_py.score) < 1e-9
+
+def test_semantic_embed_and_hybrid_rrf(sample_index: Index, sample_corpus: Path, tmp_path: Path) -> None:
+    from findex.ranking import BM25Scorer
+    from findex.search import SearchEngine
+    from findex.vector import SemanticIndex, reciprocal_rank_fusion
+
+    npy_path = tmp_path / "emb.npy"
+    res_embed = runner.invoke(app, ["embed", str(sample_corpus), "--out", str(npy_path)])
+    assert res_embed.exit_code == 0
+    assert npy_path.exists()
+
+    sem = SemanticIndex.load(npy_path)
+    # Перефразований запит без точного слова "asyncio"
+    sem_hits = sem.search("nonblocking coroutines concurrency", top_k=3)
+    assert len(sem_hits) > 0
+    assert sem_hits[0].doc_id == "doc1.txt"
+
+    eng = SearchEngine(sample_index, scorer=BM25Scorer(), corpus_dir=sample_corpus)
+    lex_hits = eng.search("python", top_k=3)
+    hyb_hits = reciprocal_rank_fusion(lex_hits, sem_hits, top_k=3)
+    assert len(hyb_hits) > 0
+
+
+def test_bench_build_index(benchmark: Any, sample_corpus: Path) -> None:
+    idx: Index = benchmark(Index.build_from_corpus, sample_corpus, workers=1, executor="serial")
+    assert idx.num_docs == 3
+
+
+def test_bench_vector_search(benchmark: Any, sample_index: Index, sample_corpus: Path) -> None:
+    from findex.index import NumpyIndexView
+    from findex.vector import vector_search
+
+    view = NumpyIndexView.from_index(sample_index)
+    results = benchmark(vector_search, sample_index, view, ["python"], sample_corpus, "bm25", 5)
+    assert len(results) == 2

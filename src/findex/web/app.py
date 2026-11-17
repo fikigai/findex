@@ -15,8 +15,9 @@ from fastapi.templating import Jinja2Templates
 
 from findex.index import Index
 from findex.query import QuerySyntaxError
-from findex.ranking import ScorerName, make_scorer
+from findex.ranking import ScorerName, SearchResult, make_scorer
 from findex.search import SearchEngine
+from findex.vector import SearchMode, SemanticIndex, reciprocal_rank_fusion
 from findex.web.config import Settings, get_settings
 from findex.web.schemas import (
     DocumentOut,
@@ -41,11 +42,20 @@ def _load_index_safe(index_path: Path) -> Index | None:
     return Index.load_pickle(index_path)
 
 
+def _load_semantic_safe(settings: Settings) -> SemanticIndex | None:
+    if settings.embeddings_path.exists():
+        return SemanticIndex.load(settings.embeddings_path)
+    if settings.corpus_dir.exists():
+        return SemanticIndex.build_from_corpus(settings.corpus_dir)
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     app.state.settings = settings
     app.state.index = _load_index_safe(settings.index_path)
+    app.state.semantic_index = _load_semantic_safe(settings)
     if app.state.index is not None:
         logger.info(
             "Індекс завантажено у lifespan: %s (документів: %d)",
@@ -54,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     yield
     app.state.index = None
+    app.state.semantic_index = None
 
 
 def get_optional_index(request: Request) -> Index | None:
@@ -69,6 +80,11 @@ def get_required_index(
     return idx
 
 
+def get_semantic_index(request: Request) -> SemanticIndex | None:
+    sem: SemanticIndex | None = getattr(request.app.state, "semantic_index", None)
+    return sem
+
+
 def get_app_settings(request: Request) -> Settings:
     settings: Settings | None = getattr(request.app.state, "settings", None)
     return settings if settings is not None else get_settings()
@@ -79,10 +95,37 @@ def _format_html_snippet(snippet: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<mark>\1</mark>", escaped)
 
 
+def _run_mode_search(
+    q: str,
+    mode: SearchMode,
+    scorer: ScorerName,
+    top_k: int,
+    idx: Index,
+    sem_idx: SemanticIndex | None,
+    corpus_dir: Path,
+) -> list[SearchResult]:
+    active_sem = sem_idx
+    if mode in ("semantic", "hybrid") and active_sem is None and corpus_dir.exists():
+        active_sem = SemanticIndex.build_from_corpus(corpus_dir)
+
+    if mode == "semantic":
+        if active_sem is None:
+            return []
+        return active_sem.search(q, top_k=top_k)
+
+    engine = SearchEngine(idx, scorer=make_scorer(scorer), corpus_dir=corpus_dir)
+    if mode == "hybrid":
+        lex_hits = engine.search(q, top_k=max(20, top_k * 3))
+        sem_hits = active_sem.search(q, top_k=max(20, top_k * 3)) if active_sem is not None else []
+        return reciprocal_rank_fusion(lex_hits, sem_hits, top_k=top_k)
+
+    return engine.search(q, top_k=top_k)
+
+
 def create_app() -> FastAPI:
     application = FastAPI(
         title="Findex Web Search",
-        version="0.7.0",
+        version="1.0.0",
         lifespan=lifespan,
     )
 
@@ -139,19 +182,24 @@ def create_app() -> FastAPI:
     def search_endpoint(
         q: Annotated[str, Query(min_length=1, max_length=256, description="Пошуковий запит")],
         idx: Annotated[Index, Depends(get_required_index)],
+        sem_idx: Annotated[SemanticIndex | None, Depends(get_semantic_index)],
         settings: Annotated[Settings, Depends(get_app_settings)],
         k: Annotated[int, Query(ge=1, le=50, description="Розмір сторінки результатів")] = 5,
         scorer: Annotated[ScorerName, Query(description="Модель ранжування")] = "bm25",
+        mode: Annotated[SearchMode, Query(description="Режим: lexical, semantic, hybrid")] = "lexical",
         page: Annotated[int, Query(ge=1, le=100, description="Номер сторінки")] = 1,
     ) -> SearchResponseOut:
         t0 = time.perf_counter()
-        engine = SearchEngine(
-            idx,
-            scorer=make_scorer(scorer),
-            corpus_dir=settings.corpus_dir,
-        )
         try:
-            all_hits = engine.search(q, top_k=max(1000, page * k))
+            all_hits = _run_mode_search(
+                q=q,
+                mode=mode,
+                scorer=scorer,
+                top_k=max(1000, page * k),
+                idx=idx,
+                sem_idx=sem_idx,
+                corpus_dir=settings.corpus_dir,
+            )
         except QuerySyntaxError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 
@@ -172,6 +220,7 @@ def create_app() -> FastAPI:
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
         return SearchResponseOut(
             query=q,
+            mode=mode,
             scorer=scorer,
             page=page,
             page_size=k,
@@ -185,9 +234,11 @@ def create_app() -> FastAPI:
     def index_ui(
         request: Request,
         idx: Annotated[Index | None, Depends(get_optional_index)],
+        sem_idx: Annotated[SemanticIndex | None, Depends(get_semantic_index)],
         settings: Annotated[Settings, Depends(get_app_settings)],
         q: str = "",
         scorer: ScorerName = "bm25",
+        mode: SearchMode = "lexical",
         page: Annotated[int, Query(ge=1, le=100)] = 1,
         doc: str = "",
     ) -> HTMLResponse:
@@ -215,13 +266,16 @@ def create_app() -> FastAPI:
             if q.strip():
                 t0 = time.perf_counter()
                 k = 5
-                engine = SearchEngine(
-                    idx,
-                    scorer=make_scorer(scorer),
-                    corpus_dir=settings.corpus_dir,
-                )
                 try:
-                    all_hits = engine.search(q.strip(), top_k=max(1000, page * k))
+                    all_hits = _run_mode_search(
+                        q=q.strip(),
+                        mode=mode,
+                        scorer=scorer,
+                        top_k=max(1000, page * k),
+                        idx=idx,
+                        sem_idx=sem_idx,
+                        corpus_dir=settings.corpus_dir,
+                    )
                     total_hits = len(all_hits)
                     total_pages = max(1, math.ceil(total_hits / k))
                     start = (page - 1) * k
@@ -254,6 +308,7 @@ def create_app() -> FastAPI:
                 "vocab_size": vocab_size,
                 "q": q,
                 "scorer": scorer,
+                "mode": mode,
                 "error_msg": error_msg,
                 "search_data": search_data,
                 "selected_doc": selected_doc,
