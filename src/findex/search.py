@@ -28,7 +28,7 @@ class SearchEngine:
         self.corpus_dir = Path(corpus_dir)
         self._cached_lookup = lru_cache(maxsize=128)(self._execute_cached)
 
-    def _load_doc_text(self, doc_id: str) -> str:
+    def load_doc_text(self, doc_id: str) -> str:
         if self.corpus_dir.is_file() and self.corpus_dir.suffix == ".jsonl":
             with open(self.corpus_dir, encoding="utf-8", errors="ignore") as f:
                 for line in f:
@@ -137,7 +137,7 @@ class SearchEngine:
             if doc_meta is None:
                 continue
             score = self.scorer.score(self.index, terms, doc_id, doc_meta.length)
-            text = self._load_doc_text(doc_id)
+            text = self.load_doc_text(doc_id)
             snippet = generate_snippet(text, terms)
             scored_results.append(SearchResult(score=score, doc_id=doc_id, snippet=snippet))
 

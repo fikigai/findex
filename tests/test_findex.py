@@ -508,3 +508,105 @@ def test_jsonl_corpus_indexing_and_search(tmp_path: Path) -> None:
     results: list[dict[str, object]] = json.loads(res_search.stdout)
     assert len(results) == 1
     assert results[0]["doc_id"] == "http://docs.local/page1"
+
+   # --- 9. Тести Лабораторної №7: FastAPI Web Search через TestClient і dependency_overrides ---
+def test_web_health_503_when_index_missing() -> None:
+    from typing import Any
+
+    from fastapi.testclient import TestClient
+
+    from findex.web.app import create_app, get_optional_index
+
+    web_app = create_app()
+    web_app.dependency_overrides[get_optional_index] = lambda: None
+    client: Any = TestClient(web_app)
+
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    assert resp.json()["index_loaded"] is False
+
+
+def test_web_search_pagination_and_stats(sample_index: Index, sample_corpus: Path) -> None:
+    from typing import Any
+
+    from fastapi.testclient import TestClient
+
+    from findex.web.app import create_app, get_app_settings, get_optional_index
+    from findex.web.config import Settings
+
+    web_app = create_app()
+    web_app.dependency_overrides[get_optional_index] = lambda: sample_index
+    web_app.dependency_overrides[get_app_settings] = lambda: Settings(corpus_dir=sample_corpus)
+    client: Any = TestClient(web_app)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["num_docs"] == 3
+
+    stats = client.get("/stats")
+    assert stats.status_code == 200
+    assert stats.json()["num_docs"] == 3
+
+    search_resp = client.get("/search", params={"q": "python", "k": 1, "page": 1, "scorer": "bm25"})
+    assert search_resp.status_code == 200
+    data = search_resp.json()
+    assert data["total_hits"] == 2
+    assert data["total_pages"] == 2
+    assert len(data["results"]) == 1
+    assert "X-Request-ID" in search_resp.headers
+
+
+def test_web_search_422_on_invalid_params(sample_index: Index) -> None:
+    from typing import Any
+
+    from fastapi.testclient import TestClient
+
+    from findex.web.app import create_app, get_optional_index
+
+    web_app = create_app()
+    web_app.dependency_overrides[get_optional_index] = lambda: sample_index
+    client: Any = TestClient(web_app)
+
+    assert client.get("/search", params={"q": ""}).status_code == 422
+    assert client.get("/search", params={"q": "python", "scorer": "unknown"}).status_code == 422
+    assert client.get("/search", params={"q": "AND OR"}).status_code == 422
+
+
+def test_web_document_404_and_200(sample_index: Index, sample_corpus: Path) -> None:
+    from typing import Any
+
+    from fastapi.testclient import TestClient
+
+    from findex.web.app import create_app, get_app_settings, get_optional_index
+    from findex.web.config import Settings
+
+    web_app = create_app()
+    web_app.dependency_overrides[get_optional_index] = lambda: sample_index
+    web_app.dependency_overrides[get_app_settings] = lambda: Settings(corpus_dir=sample_corpus)
+    client: Any = TestClient(web_app)
+
+    ok_doc = client.get("/docs/doc1.txt")
+    assert ok_doc.status_code == 200
+    assert "Python" in ok_doc.json()["content"]
+
+    missing_doc = client.get("/docs/non_existent.txt")
+    assert missing_doc.status_code == 404
+
+
+def test_web_html_ui_renders(sample_index: Index, sample_corpus: Path) -> None:
+    from typing import Any
+
+    from fastapi.testclient import TestClient
+
+    from findex.web.app import create_app, get_app_settings, get_optional_index
+    from findex.web.config import Settings
+
+    web_app = create_app()
+    web_app.dependency_overrides[get_optional_index] = lambda: sample_index
+    web_app.dependency_overrides[get_app_settings] = lambda: Settings(corpus_dir=sample_corpus)
+    client: Any = TestClient(web_app)
+
+    html_resp = client.get("/", params={"q": "python", "doc": "doc1.txt"})
+    assert html_resp.status_code == 200
+    assert "<mark>" in html_resp.text
+    assert "doc1.txt" in html_resp.text

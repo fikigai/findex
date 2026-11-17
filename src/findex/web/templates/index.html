@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --mark-bg: rgba(56, 189, 248, 0.22);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.75rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.65rem;
+      letter-spacing: -0.02em;
+    }
+    header h1 a { color: var(--text); text-decoration: none; }
+    header h1 span { color: var(--accent); }
+    .meta-badge {
+      font-size: 0.85rem;
+      color: var(--muted);
+      background: var(--card);
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+    }
+    .search-box {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    input[type="text"] {
+      flex: 1 1 340px;
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input[type="text"]:focus {
+      outline: 2px solid var(--accent);
+      border-color: transparent;
+    }
+    select, button {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 600;
+      border: none;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    .summary {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 0.65rem;
+      padding: 1.1rem 1.25rem;
+      margin-bottom: 0.9rem;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 0.45rem;
+    }
+    .doc-link {
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .doc-link:hover { text-decoration: underline; }
+    .score-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+      background: rgba(15, 23, 42, 0.7);
+      padding: 0.2rem 0.55rem;
+      border-radius: 0.35rem;
+      color: #7dd3fc;
+      white-space: nowrap;
+    }
+    .snippet { color: #cbd5e1; font-size: 0.95rem; }
+    mark {
+      background: var(--mark-bg);
+      color: #7dd3fc;
+      padding: 0.05rem 0.25rem;
+      border-radius: 0.2rem;
+      font-weight: 600;
+    }
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 1.5rem;
+    }
+    .pagination a {
+      color: var(--accent);
+      text-decoration: none;
+      padding: 0.45rem 0.9rem;
+      border: 1px solid var(--border);
+      border-radius: 0.45rem;
+      background: var(--card);
+    }
+    .doc-viewer pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.9rem;
+      color: #e2e8f0;
+      margin: 0;
+    }
+    .error-banner {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid #ef4444;
+      color: #fca5a5;
+      padding: 0.85rem 1rem;
+      border-radius: 0.5rem;
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><a href="/"><span>F</span>index</a></h1>
+      <div class="meta-badge">Документів: {{ num_docs }} &middot; Словник: {{ vocab_size }}</div>
+    </header>
+
+    <form class="search-box" method="get" action="/">
+      <input
+        type="text"
+        name="q"
+        value="{{ q }}"
+        placeholder='Запит: python AND ("пошукова система" OR bm25) NOT java'
+        autofocus
+      />
+      <select name="scorer">
+        <option value="bm25" {% if scorer == "bm25" %}selected{% endif %}>BM25</option>
+        <option value="tfidf" {% if scorer == "tfidf" %}selected{% endif %}>TF-IDF</option>
+      </select>
+      <button class="primary" type="submit">Знайти</button>
+    </form>
+
+    {% if error_msg %}
+      <div class="error-banner">{{ error_msg }}</div>
+    {% endif %}
+
+    {% if selected_doc %}
+      <div class="card doc-viewer">
+        <div class="card-header">
+          <strong>Документ: {{ selected_doc.doc_id }}</strong>
+          <span class="score-pill">Токенів: {{ selected_doc.length }}</span>
+        </div>
+        <hr style="border: 0; border-top: 1px solid var(--border); margin: 0.75rem 0;" />
+        <pre>{{ selected_doc.content }}</pre>
+      </div>
+    {% endif %}
+
+    {% if search_data %}
+      <div class="summary">
+        Знайдено <strong>{{ search_data.total_hits }}</strong> результатів
+        за <strong>{{ search_data.elapsed_ms }} мс</strong>
+        (сторінка {{ search_data.page }} з {{ search_data.total_pages }})
+      </div>
+
+      {% for item in search_data.results %}
+        <div class="card">
+          <div class="card-header">
+            <a class="doc-link" href="/?q={{ q | urlencode }}&scorer={{ scorer }}&page={{ search_data.page }}&doc={{ item.doc_id | urlencode }}">
+              #{{ item.rank }} &middot; {{ item.doc_id }}
+            </a>
+            <span class="score-pill">score: {{ "%.4f" | format(item.score) }}</span>
+          </div>
+          <div class="snippet">{{ item.highlighted_snippet | safe }}</div>
+        </div>
+      {% else %}
+        <div class="card">За запитом <strong>{{ q }}</strong> нічого не знайдено.</div>
+      {% endfor %}
+
+      {% if search_data.total_pages > 1 %}
+        <div class="pagination">
+          {% if search_data.page > 1 %}
+            <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&page={{ search_data.page - 1 }}">&larr; Попередня</a>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <span class="summary">Стор. {{ search_data.page }} / {{ search_data.total_pages }}</span>
+          {% if search_data.page < search_data.total_pages %}
+            <a href="/?q={{ q | urlencode }}&scorer={{ scorer }}&page={{ search_data.page + 1 }}">Наступна &rarr;</a>
+          {% else %}
+            <span></span>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+</body>
+</html>

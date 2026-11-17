@@ -156,7 +156,7 @@ def crawl_cmd(
     finally:
         crawler_logger.removeHandler(file_handler)
         file_handler.close()
-        
+
 @app.command("index")
 def index_cmd(
     corpus_dir: Annotated[Path, typer.Argument(help="Шлях до директорії корпусу або JSONL-файлу")],
@@ -274,6 +274,30 @@ def stats_cmd(
     table.add_row("Розмір словника", str(stats.vocab_size))
     stdout_console.print(table)
 
+@app.command("serve")
+def serve_cmd(
+    host: Annotated[str, typer.Option("--host", help="Адреса прослуховування")] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port", "-p", help="Порт HTTP-сервера")] = 8000,
+    workers: Annotated[int, typer.Option("--workers", "-w", help="Кількість воркерів Uvicorn")] = 1,
+    index_path: Annotated[
+        Path | None, typer.Option("--index", "-i", help="Шлях до файлу індексу (INDEX_PATH)")
+    ] = None,
+    corpus_dir: Annotated[
+        Path | None, typer.Option("--corpus", "-c", help="Шлях до корпусу (CORPUS_DIR)")
+    ] = None,
+) -> None:
+    """Запустити вебсервер пошуку FastAPI через Uvicorn."""
+    import uvicorn
+
+    if index_path is not None:
+        os.environ["INDEX_PATH"] = str(index_path)
+    if corpus_dir is not None:
+        os.environ["CORPUS_DIR"] = str(corpus_dir)
+
+    stdout_console.print(
+        f"[green]Запуск Findex Web на http://{host}:{port}[/green] (workers={workers})"
+    )
+    uvicorn.run("findex.web.app:app", host=host, port=port, workers=workers)
 
 if __name__ == "__main__":
     app()
